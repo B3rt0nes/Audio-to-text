@@ -10,8 +10,7 @@ interface Message {
   isAudio?: boolean;
 }
 
-import ExcelJS from 'exceljs';
-import { saveAs } from 'file-saver';
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz7Pn3ov4QNmB8dloNLRn7JonPxXZt29H1f2Kypna3q3w6Ry9NFvK7Ag4kudfEecHeS/exec';
 
 const COCA_QUESTIONS = [
   "Quali sono i paletti che direzionano la scelta tra il tempo della vita personale e quello della vita scout?",
@@ -27,7 +26,6 @@ export default function Home() {
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   
   const [messages, setMessages] = useState<Message[]>([]);
-  const [responsesData, setResponsesData] = useState<any[]>([]); // Memorizza le risposte
   
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -130,27 +128,25 @@ export default function Home() {
     }
   };
 
-  const downloadExcel = async () => {
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Riflessioni CoCa');
-    
-    worksheet.columns = [
-      { header: 'Data e Ora', key: 'timestamp', width: 25 },
-      { header: 'Mittente', key: 'sender', width: 20 },
-      { header: 'Domanda', key: 'question', width: 50 },
-      { header: 'Tipo Input', key: 'type', width: 20 },
-      { header: 'Risposta', key: 'text', width: 100 }
-    ];
-    
-    worksheet.getRow(1).font = { bold: true };
-    
-    responsesData.forEach(resp => {
-      worksheet.addRow(resp);
-    });
-
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    saveAs(blob, `riflessioni_coca_${userName.replace(/\s+/g, '_')}.xlsx`);
+  const sendToGoogleSheets = async (msg: Message, questionTitle: string) => {
+    try {
+      await fetch(GOOGLE_SCRIPT_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'text/plain',
+        },
+        body: JSON.stringify({
+          timestamp: new Date().toLocaleString('it-IT'),
+          sender: userName,
+          question: questionTitle,
+          type: msg.isAudio ? 'Vocale (Trascritto)' : 'Testuale',
+          text: msg.text
+        })
+      });
+    } catch (err) {
+      console.error("Errore invio a Google Sheets:", err);
+    }
   };
 
   const handleSend = async (text: string = inputText, isVoiceMsg = false) => {
@@ -166,15 +162,9 @@ export default function Home() {
     setMessages(prev => [...prev, newMessage]);
     setInputText('');
     
-    // Salva risposta in memoria
+    // Invia la risposta a Google Sheets
     const currentQuestionTitle = `${currentQuestionIndex + 1}. ${COCA_QUESTIONS[currentQuestionIndex]}`;
-    setResponsesData(prev => [...prev, {
-      timestamp: new Date().toLocaleString('it-IT'),
-      sender: userName,
-      question: currentQuestionTitle,
-      type: isVoiceMsg ? 'Vocale (Trascritto)' : 'Testuale',
-      text: text.trim()
-    }]);
+    await sendToGoogleSheets(newMessage, currentQuestionTitle);
 
     // Passa alla prossima domanda o concludi
     setTimeout(async () => {
@@ -368,14 +358,8 @@ export default function Home() {
       ) : (
         <footer className="p-6 bg-background border-t border-border flex flex-col items-center gap-4">
           <p className="text-muted-foreground text-sm font-medium">
-            Hai completato tutte le riflessioni previste.
+            Hai completato tutte le riflessioni previste. Le tue risposte sono state inviate con successo.
           </p>
-          <button 
-            onClick={downloadExcel}
-            className="px-6 py-3 bg-green-600 text-white rounded-xl font-bold shadow-lg shadow-green-600/30 hover:bg-green-700 transition-all flex items-center gap-2"
-          >
-            Scarica File Excel (Risposte)
-          </button>
         </footer>
       )}
       
