@@ -34,6 +34,8 @@ export default function Home() {
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   // Send the first question when authenticated
   useEffect(() => {
@@ -102,33 +104,102 @@ export default function Home() {
     }
   }, [messages, isAuth]);
 
-  const toggleRecording = () => {
+  const toggleRecording = async () => {
     if (isRecording) {
+      // Ferma la registrazione
       setIsRecording(false);
+      
       if (recognitionRef.current) {
         recognitionRef.current.stop();
       }
-      setTimeout(() => {
-        if (inputText.trim()) {
-          handleSend(inputText, true);
-        }
-      }, 500);
+      
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop(); // Questo scatena l'evento onstop che salva l'audio e invia il messaggio
+      } else {
+        // Se non c'era l'audio recorder, invia solo il testo trascritto
+        setTimeout(() => {
+          if (inputText.trim()) {
+            handleSend(inputText, true);
+          }
+        }, 500);
+      }
+      
     } else {
+      // Inizia la registrazione
       setRecordingError(null);
       setInputText(''); 
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.start();
-          setIsRecording(true);
-        } catch (e) {
-          console.error(e);
-          setRecordingError("Non riesco ad avviare il microfono.");
+      
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
+        audioChunksRef.current = [];
+        
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) {
+            audioChunksRef.current.push(e.data);
+          }
+        };
+        
+        mediaRecorder.onstop = () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          const reader = new FileReader();
+          reader.readAsDataURL(audioBlob);
+          reader.onloadend = () => {
+            const base64data = reader.result as string;
+            // Estrai solo la parte base64 pulita (senza "data:audio/webm;base64,")
+            const cleanBase64 = base64data.split(',')[1];
+            
+            // Usa il testo trascritto fino a quel momento
+            // Poiché inputText potrebbe non essere aggiornato nell'onstop closure, 
+            // per semplicità inviamo l'audio. Se c'è testo lo inviamo.
+            // Qui dobbiamo stare attenti a usare lo stato aggiornato.
+            setMessages(prev => {
+              // Hack: per prendere il testo corrente nell'onstop senza problemi di closure
+              return prev; 
+            });
+            
+            // Per evitare problemi con il testo (che potrebbe essere rimasto indietro nella closure)
+            // usiamo una funzione setter per leggere il testo attuale, oppure lo passiamo tramite un ref.
+            // Soluzione migliore: triggera l'invio passando l'audio.
+            handleSendAudioComplete(cleanBase64);
+          };
+          
+          // Ferma le tracce per liberare il microfono
+          stream.getTracks().forEach(track => track.stop());
+        };
+        
+        mediaRecorder.start();
+        setIsRecording(true);
+        
+        if (recognitionRef.current) {
+          try {
+            recognitionRef.current.start();
+          } catch (e) {
+            console.error(e);
+          }
         }
+      } catch (e) {
+        console.error(e);
+        setRecordingError("Non riesco ad accedere al microfono.");
       }
     }
   };
 
-  const sendToGoogleSheets = async (msg: Message, questionTitle: string) => {
+  // Usiamo un ref per tracciare il testo corrente durante la registrazione in modo da poterlo leggere dentro l'onstop del mediarecorder
+  const currentInputTextRef = useRef(inputText);
+  useEffect(() => {
+    currentInputTextRef.current = inputText;
+  }, [inputText]);
+
+  const handleSendAudioComplete = (audioBase64: string) => {
+    const finalTxt = currentInputTextRef.current.trim();
+    if (finalTxt || audioBase64) {
+      handleSend(finalTxt || "🎤 Vocale registrato", true, audioBase64);
+    }
+  };
+
+  const sendToGoogleSheets = async (msg: Message, questionTitle: string, audioBase64?: string) => {
     try {
       await fetch(GOOGLE_SCRIPT_URL, {
         method: 'POST',
@@ -140,8 +211,9 @@ export default function Home() {
           timestamp: new Date().toLocaleString('it-IT'),
           sender: userName,
           question: questionTitle,
-          type: msg.isAudio ? 'Vocale (Trascritto)' : 'Testuale',
-          text: msg.text
+          type: msg.isAudio ? 'Vocale' : 'Testuale',
+          text: msg.text,
+          audioData: audioBase64 || null
         })
       });
     } catch (err) {
@@ -149,8 +221,8 @@ export default function Home() {
     }
   };
 
-  const handleSend = async (text: string = inputText, isVoiceMsg = false) => {
-    if (!text.trim()) return;
+  const handleSend = async (text: string = inputText, isVoiceMsg = false, audioBase64?: string) => {
+    if (!text.trim() && !audioBase64) return;
 
     const newMessage: Message = {
       id: Date.now().toString(),
