@@ -236,7 +236,7 @@ export default function Home() {
     
     // Invia la risposta a Google Sheets
     const currentQuestionTitle = `${currentQuestionIndex + 1}. ${COCA_QUESTIONS[currentQuestionIndex]}`;
-    await sendToGoogleSheets(newMessage, currentQuestionTitle);
+    await sendToGoogleSheets(newMessage, currentQuestionTitle, audioBase64);
 
     // Passa alla prossima domanda o concludi
     setTimeout(async () => {
